@@ -35,7 +35,6 @@ def add_papers(papers, user_id):
     return added
 
 
-# 🔥 УЛУЧШЕННЫЙ ПОИСК
 def search_db(query, user_id):
     db = load_db()
     results = []
@@ -73,6 +72,20 @@ def delete_paper_by_index(user_id, index):
         p for p in db
         if not (p["link"] == paper["link"] and p.get("user_id") == user_id)
     ]
+
+    save_db(new_db)
+    return True
+
+def delete_by_link(user_id, link):
+    db = load_db()
+
+    new_db = [
+        p for p in db
+        if not (p.get("user_id") == user_id and p["link"] == link)
+    ]
+
+    if len(new_db) == len(db):
+        return False
 
     save_db(new_db)
     return True

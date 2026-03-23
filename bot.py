@@ -11,7 +11,7 @@ from rag import (
     search_db,
     add_papers,
     build_context,
-    delete_paper_by_index,
+    delete_by_link,
     delete_by_query,
     count_user_articles,
     get_user_papers
@@ -47,7 +47,6 @@ def translate(text, target_lang="Russian"):
 
     prompt = f"Translate to {target_lang}. Only translation:\n{text}"
 
-    # FREE
     for model in [
         "mistralai/mistral-7b-instruct:free",
         "qwen/qwen3-next-80b-a3b-instruct:free"
@@ -73,7 +72,6 @@ def translate(text, target_lang="Russian"):
         except:
             pass
 
-    # POLZA
     try:
         r = requests.post(
             "https://api.polza.ai/v1/chat/completions",
@@ -108,7 +106,6 @@ Question:
 {question}
 """
 
-    # FREE
     for model in ["qwen/qwen3-next-80b-a3b-instruct:free"]:
         try:
             r = requests.post(
@@ -127,7 +124,6 @@ Question:
         except:
             pass
 
-    # POLZA
     try:
         r = requests.post(
             "https://api.polza.ai/v1/chat/completions",
@@ -188,8 +184,6 @@ async def search(message: Message):
         all_papers += search_all(translate(query, "English"))
 
     papers = prepare_papers(deduplicate(all_papers))
-
-    # 🔥 фильтр мусора
     papers = [p for p in papers if len(p["text"]) > 300]
 
     if not papers:
@@ -210,7 +204,10 @@ async def search(message: Message):
             )
 
         buttons.append(
-            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_{i}")
+            InlineKeyboardButton(
+                text="🗑 Удалить",
+                callback_data=f"delete_{p['link']}"
+            )
         )
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[buttons])
@@ -266,7 +263,7 @@ async def send_page(message, papers, page):
     chunk = papers[start:start + PAGE_SIZE]
 
     text = "\n\n".join(
-        f"{i+start}. {p['title'][:80]}"
+        f"{i+start+1}. {p['title'][:80]}"
         for i, p in enumerate(chunk)
     )
 
@@ -290,14 +287,14 @@ async def page_callback(callback: CallbackQuery):
 @dp.message(Command("view"))
 async def view_cmd(message: Message):
     try:
-        idx = int(message.text.split()[1])
+        idx = int(message.text.split()[1]) - 1
     except:
         await message.answer("❌ Укажи ID")
         return
 
     papers = get_user_papers(message.from_user.id)
 
-    if idx >= len(papers):
+    if idx < 0 or idx >= len(papers):
         await message.answer("❌ Нет статьи")
         return
 
@@ -369,9 +366,9 @@ async def translate_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("delete_"))
 async def delete_callback(callback: CallbackQuery):
-    idx = int(callback.data.split("_")[1])
+    link = callback.data.replace("delete_", "", 1)
 
-    success = delete_paper_by_index(callback.from_user.id, idx)
+    success = delete_by_link(callback.from_user.id, link)
 
     if success:
         await callback.message.answer("🗑 Удалено")
