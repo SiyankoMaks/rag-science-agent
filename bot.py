@@ -26,6 +26,7 @@ dp = Dispatcher()
 
 translation_cache = {}
 user_papers_cache = {}
+last_search_cache = {}
 
 PAGE_SIZE = 5
 
@@ -47,7 +48,10 @@ def translate(text, target_lang="Russian"):
     prompt = f"Translate to {target_lang}. Only translation:\n{text}"
 
     # FREE
-    for model in ["mistralai/mistral-7b-instruct:free"]:
+    for model in [
+        "mistralai/mistral-7b-instruct:free",
+        "qwen/qwen3-next-80b-a3b-instruct:free"
+    ]:
         try:
             r = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -66,7 +70,6 @@ def translate(text, target_lang="Russian"):
                 if res.lower() != text.lower():
                     translation_cache[key] = res
                     return res
-
         except:
             pass
 
@@ -96,7 +99,8 @@ def translate(text, target_lang="Russian"):
 
 def llm_answer(context, question):
     prompt = f"""
-Answer using context.
+Answer using ONLY the context.
+If not enough data say: Not enough data.
 
 Context:
 {context}
@@ -137,14 +141,19 @@ Question:
         return r.json()["choices"][0]["message"]["content"]
 
     except:
-        return "Ошибка"
+        return "❌ Ошибка"
 
 
-# ---------------- HELP ---------------- #
+# ---------------- COMMANDS ---------------- #
+
+@dp.message(Command("start"))
+async def start(message: Message):
+    await message.answer("🤖 RAG Scientist ready\nНапиши /help")
+
 
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
-    text = """
+    await message.answer("""
 📚 Команды:
 
 /search <запрос> — найти статьи  
@@ -153,13 +162,80 @@ async def help_cmd(message: Message):
 /view <id> — открыть статью  
 /delete <текст> — удалить  
 /stats — статистика  
-"""
-    await message.answer(text)
+""")
+
+
+@dp.message(Command("stats"))
+async def stats(message: Message):
+    count = count_user_articles(message.from_user.id)
+    await message.answer(f"📊 Твоих статей: {count}")
+
+
+# ---------------- SEARCH ---------------- #
+
+@dp.message(Command("search"))
+async def search(message: Message):
+    query = message.text.replace("/search", "").strip()
+
+    if not query:
+        await message.answer("❌ Укажи запрос")
+        return
+
+    await message.answer("🔍 Ищу статьи...")
+
+    all_papers = search_all(query)
+
+    if detect_language(query) == "ru":
+        all_papers += search_all(translate(query, "English"))
+
+    papers = prepare_papers(deduplicate(all_papers))
+
+    if not papers:
+        await message.answer("❌ Ничего не найдено")
+        return
+
+    added = add_papers(papers, message.from_user.id)
+    last_search_cache[message.from_user.id] = papers
+
+    await message.answer(f"✅ Найдено: {len(papers)}\n💾 Добавлено: {added}")
+
+    for i, p in enumerate(papers[:3]):
+        buttons = []
+
+        if detect_language(p["title"]) == "en":
+            buttons.append(
+                InlineKeyboardButton(text="🌍 Перевести", callback_data=f"translate_{i}")
+            )
+
+        buttons.append(
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_{i}")
+        )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[buttons])
+
+        await message.answer(
+            f"📄 {p['title']}\n\n🔗 {p['link']}\n\n📌 {p['text'][:300]}...",
+            reply_markup=keyboard
+        )
+
+
+# ---------------- DELETE ---------------- #
+
+@dp.message(Command("delete"))
+async def delete(message: Message):
+    query = message.text.replace("/delete", "").strip()
+
+    if not query:
+        await message.answer("❌ Укажи текст")
+        return
+
+    removed = delete_by_query(message.from_user.id, query)
+    await message.answer(f"🗑 Удалено: {removed}")
 
 
 # ---------------- LIST ---------------- #
 
-def build_list_keyboard(page, total):
+def build_keyboard(page, total):
     buttons = []
 
     if page > 0:
@@ -180,24 +256,22 @@ async def list_cmd(message: Message):
         return
 
     user_papers_cache[message.from_user.id] = papers
-
     await send_page(message, papers, 0)
 
 
 async def send_page(message, papers, page):
     start = page * PAGE_SIZE
-    end = start + PAGE_SIZE
-
-    chunk = papers[start:end]
+    chunk = papers[start:start + PAGE_SIZE]
 
     text = "\n\n".join(
         f"{i+start}. {p['title'][:80]}"
         for i, p in enumerate(chunk)
     )
 
-    keyboard = build_list_keyboard(page, len(papers))
-
-    await message.answer(f"📚 Статьи:\n\n{text}", reply_markup=keyboard)
+    await message.answer(
+        f"📚 Статьи:\n\n{text}",
+        reply_markup=build_keyboard(page, len(papers))
+    )
 
 
 @dp.callback_query(F.data.startswith("page_"))
@@ -230,6 +304,82 @@ async def view_cmd(message: Message):
     await message.answer(
         f"📄 {p['title']}\n\n{p['text']}\n\n🔗 {p['link']}"
     )
+
+
+# ---------------- ASK ---------------- #
+
+@dp.message(Command("ask"))
+async def ask(message: Message):
+    query = message.text.replace("/ask", "").strip()
+
+    if not query:
+        await message.answer("❌ Укажи вопрос")
+        return
+
+    await message.answer("🧠 Думаю...")
+
+    docs = search_db(query, message.from_user.id)
+
+    if not docs:
+        await message.answer("⚠️ Нет данных\n🔍 Ищу статьи...")
+
+        papers = search_all(query)
+
+        if detect_language(query) == "ru":
+            papers += search_all(translate(query, "English"))
+
+        papers = prepare_papers(deduplicate(papers))
+
+        if not papers:
+            await message.answer("❌ Ничего не найдено")
+            return
+
+        add_papers(papers, message.from_user.id)
+        docs = papers
+
+        await message.answer(f"📚 Найдено и добавлено: {len(papers)}")
+
+    context = build_context(docs)
+
+    if len(context) < 200:
+        await message.answer("❌ Недостаточно данных")
+        return
+
+    answer = llm_answer(context, query)
+    await message.answer(answer)
+
+
+# ---------------- CALLBACKS ---------------- #
+
+@dp.callback_query(F.data.startswith("translate_"))
+async def translate_callback(callback: CallbackQuery):
+    idx = int(callback.data.split("_")[1])
+    papers = last_search_cache.get(callback.from_user.id, [])
+
+    if idx >= len(papers):
+        await callback.answer("Ошибка")
+        return
+
+    p = papers[idx]
+
+    await callback.message.answer(
+        f"🌍 ПЕРЕВОД:\n\n{translate(p['title'])}\n\n{translate(p['text'][:500])}"
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("delete_"))
+async def delete_callback(callback: CallbackQuery):
+    idx = int(callback.data.split("_")[1])
+
+    success = delete_paper_by_index(callback.from_user.id, idx)
+
+    if success:
+        await callback.message.answer("🗑 Удалено")
+    else:
+        await callback.message.answer("❌ Ошибка")
+
+    await callback.answer()
 
 
 # ---------------- RUN ---------------- #

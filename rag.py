@@ -97,3 +97,7 @@ def build_context(docs):
         context += f"{p['title']}\n{p['text']}\n\n"
 
     return context[:4000]
+
+def get_user_papers(user_id):
+    db = load_db()
+    return [p for p in db if p.get("user_id") == user_id]
