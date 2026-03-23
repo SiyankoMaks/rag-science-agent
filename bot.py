@@ -26,9 +26,6 @@ def normalize_query(q: str):
 # ==============================
 
 def llm_answer(context, question):
-    if not OPENROUTER_API_KEY:
-        return "❌ Нет API ключа OPENROUTER"
-    
     if not context:
         return "❌ В базе нет информации. Сначала используй /search"
 
@@ -45,13 +42,15 @@ Question:
 {question}
 """
 
-    models = [
+    # ---------- FREE MODELS ----------
+    free_models = [
         "qwen/qwen3-next-80b-a3b-instruct:free",
         "mistralai/mistral-7b-instruct:free",
         "openchat/openchat-7b:free"
     ]
 
-    for model in models:
+    # ---------- 1. Пытаемся free ----------
+    for model in free_models:
         try:
             response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
@@ -61,24 +60,45 @@ Question:
                 },
                 json={
                     "model": model,
-                    "messages": [
-                        {"role": "user", "content": prompt}
-                    ],
+                    "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.3
                 },
-                timeout=60
+                timeout=40
             )
 
             data = response.json()
 
-            # если норм ответ
             if "choices" in data:
-                return f"🤖 Модель: {model}\n\n" + data["choices"][0]["message"]["content"]
+                return f"🆓 {model}\n\n" + data["choices"][0]["message"]["content"]
 
         except Exception as e:
-            print(f"Model {model} failed:", e)
+            print("Free model failed:", model, e)
 
-    return "❌ Все модели перегружены. Попробуй позже."
+    # ---------- 2. FALLBACK → POLZA ----------
+    try:
+        response = requests.post(
+            url="https://api.polza.ai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {os.getenv('POLZA_API_KEY')}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "qwen/qwen3-next-80b-a3b-instruct",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3
+            },
+            timeout=60
+        )
+
+        data = response.json()
+
+        if "choices" in data:
+            return "💰 Polza (paid)\n\n" + data["choices"][0]["message"]["content"]
+
+        return f"❌ Polza error: {data}"
+
+    except Exception as e:
+        return f"❌ Все модели недоступны: {e}"
 
 
 # ==============================
