@@ -1,5 +1,6 @@
 import os
 import asyncio
+import requests
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -9,26 +10,64 @@ from rag import add_papers, search_db, build_context, db_stats
 
 # --- ENV ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-# ---------- Простое LLM (пока без API) ----------
+# ==============================
+# ---------- LLM ---------------
+# ==============================
+
 def llm_answer(context, question):
+    if not OPENROUTER_API_KEY:
+        return "❌ Нет API ключа OPENROUTER"
+    
     if not context:
         return "❌ В базе нет информации. Сначала используй /search"
-    
-    return f"""
-🧠 Ответ на основе найденных статей:
 
-Вопрос: {question}
+    prompt = f"""
+You are a scientific research assistant.
 
---- Контекст ---
-{context[:1500]}
+Answer the question strictly based on the provided context.
+- Do NOT invent information
+- If data is insufficient, say: "Not enough data"
+- Be clear and structured
 
-(⚠️ Это базовый режим без LLM. Позже подключим GPT)
+Context:
+{context}
+
+Question:
+{question}
 """
+
+    try:
+        response = requests.post(
+            url="https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "qwen/qwen3-next-80b-a3b-instruct",
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.3
+            },
+            timeout=60
+        )
+
+        data = response.json()
+
+        if "choices" not in data:
+            return f"❌ Ошибка LLM: {data}"
+
+        return data["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        return f"❌ Ошибка LLM: {e}"
 
 
 # ==============================
@@ -38,18 +77,18 @@ def llm_answer(context, question):
 @dp.message(Command("start"))
 async def start(msg: types.Message):
     await msg.answer(
-        "🧠 RAG-агент ученого запущен\n\n"
+        "🧠 RAG-агент ученого (с LLM)\n\n"
         "Команды:\n"
         "/search тема — найти и сохранить статьи\n"
-        "/ask вопрос — задать вопрос по базе\n"
+        "/ask вопрос — задать вопрос\n"
         "/stats — статистика базы\n\n"
         "Пример:\n"
         "/search membrane transport\n"
-        "/ask How does ion transport work?"
+        "/ask how does ion transport work?"
     )
 
 
-# ---------- ПОИСК И СОХРАНЕНИЕ ----------
+# ---------- SEARCH ----------
 @dp.message(Command("search"))
 async def search(msg: types.Message):
     query = msg.text.replace("/search", "").strip()
@@ -60,23 +99,19 @@ async def search(msg: types.Message):
     
     await msg.answer("🔍 Ищу статьи...")
     
-    # поиск
     papers = search_all(query)
     
     if not papers:
         await msg.answer("❌ Ничего не найдено")
         return
     
-    # очистка
     papers = deduplicate(papers)
     papers = prepare_papers(papers)
     
-    # сохранить в базу
     added_count = add_papers(papers)
     
-    await msg.answer(f"✅ Найдено: {len(papers)}\n💾 Добавлено в базу: {added_count}")
+    await msg.answer(f"✅ Найдено: {len(papers)}\n💾 Добавлено: {added_count}")
     
-    # показать немного
     for p in papers[:3]:
         text = f"""
 📄 {p['title']}
@@ -88,7 +123,7 @@ async def search(msg: types.Message):
         await msg.answer(text)
 
 
-# ---------- ВОПРОС К БАЗЕ ----------
+# ---------- ASK ----------
 @dp.message(Command("ask"))
 async def ask(msg: types.Message):
     query = msg.text.replace("/ask", "").strip()
@@ -99,23 +134,24 @@ async def ask(msg: types.Message):
     
     await msg.answer("🧠 Думаю...")
     
-    # поиск по базе
     results = search_db(query)
     
     if not results:
-        await msg.answer("❌ Ничего не найдено в базе. Сначала сделай /search")
+        await msg.answer("❌ Нет данных в базе. Сначала /search")
         return
     
-    # собираем контекст
     context = build_context(results)
     
-    # ответ (пока без GPT)
     answer = llm_answer(context, query)
+    
+    # защита от слишком длинных сообщений Telegram
+    if len(answer) > 4000:
+        answer = answer[:4000] + "\n\n⚠️ Ответ обрезан"
     
     await msg.answer(answer)
 
 
-# ---------- СТАТИСТИКА ----------
+# ---------- STATS ----------
 @dp.message(Command("stats"))
 async def stats(msg: types.Message):
     stats = db_stats()
@@ -125,7 +161,7 @@ async def stats(msg: types.Message):
     )
 
 
-# ---------- запуск ----------
+# ---------- RUN ----------
 
 async def main():
     await dp.start_polling(bot)
