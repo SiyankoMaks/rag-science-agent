@@ -13,7 +13,8 @@ from rag import (
     build_context,
     delete_paper_by_index,
     delete_by_query,
-    count_user_articles
+    count_user_articles,
+    get_user_papers
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -24,7 +25,9 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 translation_cache = {}
-user_papers = {}
+user_papers_cache = {}
+
+PAGE_SIZE = 5
 
 
 # ---------------- UTILS ---------------- #
@@ -36,36 +39,19 @@ def detect_language(text):
 
 
 def translate(text, target_lang="Russian"):
-    cache_key = f"{text}_{target_lang}"
+    key = f"{text}_{target_lang}"
 
-    if cache_key in translation_cache:
-        return translation_cache[cache_key]
+    if key in translation_cache:
+        return translation_cache[key]
 
-    prompt = f"""
-Translate the following text to {target_lang}.
+    prompt = f"Translate to {target_lang}. Only translation:\n{text}"
 
-IMPORTANT:
-- Return ONLY translated text
-- Do NOT repeat original
-
-TEXT:
-{text}
-"""
-
-    # -------- FREE -------- #
-    free_models = [
-        "mistralai/mistral-7b-instruct:free",
-        "qwen/qwen3-next-80b-a3b-instruct:free"
-    ]
-
-    for model in free_models:
+    # FREE
+    for model in ["mistralai/mistral-7b-instruct:free"]:
         try:
             r = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json"
-                },
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
@@ -73,58 +59,44 @@ TEXT:
                 },
                 timeout=30
             )
-
             data = r.json()
 
             if "choices" in data:
-                result = data["choices"][0]["message"]["content"].strip()
+                res = data["choices"][0]["message"]["content"].strip()
+                if res.lower() != text.lower():
+                    translation_cache[key] = res
+                    return res
 
-                # защита от "не перевёл"
-                if result.lower() != text.lower():
-                    translation_cache[cache_key] = result
-                    return result
+        except:
+            pass
 
-        except Exception as e:
-            print("FREE TRANSLATE FAIL:", model, e)
-
-    # -------- POLZA -------- #
+    # POLZA
     try:
         r = requests.post(
             "https://api.polza.ai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {POLZA_API_KEY}",
-                "Content-Type": "application/json"
-            },
+            headers={"Authorization": f"Bearer {POLZA_API_KEY}"},
             json={
                 "model": "qwen/qwen3-next-80b-a3b-instruct",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0
+                "messages": [{"role": "user", "content": prompt}]
             },
             timeout=60
         )
-
         data = r.json()
 
         if "choices" in data:
-            result = data["choices"][0]["message"]["content"].strip()
+            res = data["choices"][0]["message"]["content"]
+            translation_cache[key] = res
+            return res
 
-            translation_cache[cache_key] = result
-            return result
-
-    except Exception as e:
-        print("POLZA TRANSLATE FAIL:", e)
+    except:
+        pass
 
     return text
 
 
 def llm_answer(context, question):
     prompt = f"""
-You are a scientific assistant.
-
-Answer ONLY using the context.
-If not enough info, say: Not enough data.
-
-Answer in the same language as the question.
+Answer using context.
 
 Context:
 {context}
@@ -133,225 +105,131 @@ Question:
 {question}
 """
 
-    free_models = [
-        "qwen/qwen3-next-80b-a3b-instruct:free",
-        "mistralai/mistral-7b-instruct:free"
-    ]
-
-    # -------- FREE -------- #
-    for model in free_models:
+    # FREE
+    for model in ["qwen/qwen3-next-80b-a3b-instruct:free"]:
         try:
             r = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json"
-                },
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
                 json={
                     "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.3
-                },
-                timeout=40
+                    "messages": [{"role": "user", "content": prompt}]
+                }
             )
-
             data = r.json()
 
             if "choices" in data:
-                return f"🆓 {model}\n\n" + data["choices"][0]["message"]["content"]
+                return data["choices"][0]["message"]["content"]
 
-        except Exception as e:
-            print("FREE LLM FAIL:", model, e)
+        except:
+            pass
 
-    # -------- POLZA -------- #
+    # POLZA
     try:
         r = requests.post(
             "https://api.polza.ai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {POLZA_API_KEY}",
-                "Content-Type": "application/json"
-            },
+            headers={"Authorization": f"Bearer {POLZA_API_KEY}"},
             json={
                 "model": "qwen/qwen3-next-80b-a3b-instruct",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3
-            },
-            timeout=60
+                "messages": [{"role": "user", "content": prompt}]
+            }
         )
+        return r.json()["choices"][0]["message"]["content"]
 
-        data = r.json()
-
-        if "choices" in data:
-            return "💰 Polza\n\n" + data["choices"][0]["message"]["content"]
-
-    except Exception as e:
-        print("POLZA LLM FAIL:", e)
-
-    return "❌ Ошибка LLM"
+    except:
+        return "Ошибка"
 
 
-# ---------------- COMMANDS ---------------- #
+# ---------------- HELP ---------------- #
 
-@dp.message(Command("start"))
-async def start(message: Message):
-    await message.answer("🤖 RAG Scientist ready")
+@dp.message(Command("help"))
+async def help_cmd(message: Message):
+    text = """
+📚 Команды:
+
+/search <запрос> — найти статьи  
+/ask <вопрос> — задать вопрос  
+/list — список статей  
+/view <id> — открыть статью  
+/delete <текст> — удалить  
+/stats — статистика  
+"""
+    await message.answer(text)
 
 
-@dp.message(Command("stats"))
-async def stats(message: Message):
-    count = count_user_articles(message.from_user.id)
-    await message.answer(f"📊 Твоих статей: {count}")
+# ---------------- LIST ---------------- #
+
+def build_list_keyboard(page, total):
+    buttons = []
+
+    if page > 0:
+        buttons.append(InlineKeyboardButton(text="⬅️", callback_data=f"page_{page-1}"))
+
+    if (page + 1) * PAGE_SIZE < total:
+        buttons.append(InlineKeyboardButton(text="➡️", callback_data=f"page_{page+1}"))
+
+    return InlineKeyboardMarkup(inline_keyboard=[buttons])
 
 
-@dp.message(Command("search"))
-async def search(message: Message):
-    query = message.text.replace("/search", "").strip()
-
-    if not query:
-        await message.answer("❌ Укажи запрос")
-        return
-
-    await message.answer("🔍 Ищу статьи...")
-
-    lang = detect_language(query)
-    all_papers = []
-
-    all_papers.extend(search_all(query))
-
-    if lang == "ru":
-        translated = translate(query, "English")
-        all_papers.extend(search_all(translated))
-
-    papers = prepare_papers(deduplicate(all_papers))
+@dp.message(Command("list"))
+async def list_cmd(message: Message):
+    papers = get_user_papers(message.from_user.id)
 
     if not papers:
-        await message.answer("❌ Ничего не найдено")
+        await message.answer("📭 Нет статей")
         return
 
-    added = add_papers(papers, message.from_user.id)
+    user_papers_cache[message.from_user.id] = papers
 
-    await message.answer(f"✅ Найдено: {len(papers)}\n💾 Добавлено: {added}")
-
-    user_papers[message.from_user.id] = papers
-
-    for i, p in enumerate(papers[:3]):
-        buttons = []
-
-        if detect_language(p["title"]) == "en":
-            buttons.append(
-                InlineKeyboardButton(
-                    text="🌍 Перевести",
-                    callback_data=f"translate_{i}"
-                )
-            )
-
-        buttons.append(
-            InlineKeyboardButton(
-                text="🗑 Удалить",
-                callback_data=f"delete_{i}"
-            )
-        )
-
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[buttons])
-
-        await message.answer(
-            f"📄 {p['title']}\n\n🔗 {p['link']}\n\n📌 {p['text'][:300]}...",
-            reply_markup=keyboard
-        )
+    await send_page(message, papers, 0)
 
 
-@dp.message(Command("delete"))
-async def delete(message: Message):
-    query = message.text.replace("/delete", "").strip()
+async def send_page(message, papers, page):
+    start = page * PAGE_SIZE
+    end = start + PAGE_SIZE
 
-    if not query:
-        await message.answer("❌ Укажи часть названия")
-        return
+    chunk = papers[start:end]
 
-    removed = delete_by_query(message.from_user.id, query)
-
-    await message.answer(f"🗑 Удалено: {removed}")
-
-
-# ---------------- CALLBACK ---------------- #
-
-@dp.callback_query(F.data.startswith("translate_"))
-async def translate_callback(callback: CallbackQuery):
-    index = int(callback.data.split("_")[1])
-    papers = user_papers.get(callback.from_user.id, [])
-
-    if index >= len(papers):
-        await callback.answer("Ошибка")
-        return
-
-    p = papers[index]
-
-    title_ru = translate(p["title"], "Russian")
-    text_ru = translate(p["text"][:500], "Russian")
-
-    await callback.message.answer(
-        f"🌍 ПЕРЕВОД:\n\n{title_ru}\n\n{text_ru}"
+    text = "\n\n".join(
+        f"{i+start}. {p['title'][:80]}"
+        for i, p in enumerate(chunk)
     )
 
+    keyboard = build_list_keyboard(page, len(papers))
+
+    await message.answer(f"📚 Статьи:\n\n{text}", reply_markup=keyboard)
+
+
+@dp.callback_query(F.data.startswith("page_"))
+async def page_callback(callback: CallbackQuery):
+    page = int(callback.data.split("_")[1])
+    papers = user_papers_cache.get(callback.from_user.id, [])
+
+    await send_page(callback.message, papers, page)
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("delete_"))
-async def delete_callback(callback: CallbackQuery):
-    index = int(callback.data.split("_")[1])
+# ---------------- VIEW ---------------- #
 
-    success = delete_paper_by_index(callback.from_user.id, index)
-
-    if success:
-        await callback.message.answer("🗑 Статья удалена")
-    else:
-        await callback.message.answer("❌ Ошибка удаления")
-
-    await callback.answer()
-
-
-# ---------------- ASK ---------------- #
-
-@dp.message(Command("ask"))
-async def ask(message: Message):
-    query = message.text.replace("/ask", "").strip()
-
-    if not query:
-        await message.answer("❌ Укажи вопрос")
+@dp.message(Command("view"))
+async def view_cmd(message: Message):
+    try:
+        idx = int(message.text.split()[1])
+    except:
+        await message.answer("❌ Укажи ID")
         return
 
-    await message.answer("🧠 Думаю...")
+    papers = get_user_papers(message.from_user.id)
 
-    docs = search_db(query, message.from_user.id)
-
-    if not docs:
-        await message.answer("⚠️ Нет данных\n🔍 Ищу статьи...")
-
-        papers = search_all(query)
-
-        if detect_language(query) == "ru":
-            papers += search_all(translate(query, "English"))
-
-        papers = prepare_papers(deduplicate(papers))
-
-        if not papers:
-            await message.answer("❌ Ничего не найдено")
-            return
-
-        add_papers(papers, message.from_user.id)
-        docs = papers
-
-        await message.answer(f"📚 Найдено и добавлено: {len(papers)}")
-
-    context = build_context(docs)
-
-    if len(context) < 200:
-        await message.answer("❌ Недостаточно данных")
+    if idx >= len(papers):
+        await message.answer("❌ Нет статьи")
         return
 
-    answer = llm_answer(context, query)
+    p = papers[idx]
 
-    await message.answer(answer)
+    await message.answer(
+        f"📄 {p['title']}\n\n{p['text']}\n\n🔗 {p['link']}"
+    )
 
 
 # ---------------- RUN ---------------- #
