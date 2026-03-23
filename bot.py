@@ -2,14 +2,15 @@ import os
 import asyncio
 import requests
 
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 from aiogram.filters import Command
 
+from tools import search_all, prepare_papers, deduplicate
 from rag import (
-    search_articles,
-    add_articles_to_db,
-    get_all_articles,
+    search_db,
+    add_papers,
+    load_db,
     build_context
 )
 
@@ -19,6 +20,7 @@ POLZA_API_KEY = os.getenv("POLZA_API_KEY")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
 
 # ---------------- LLM ---------------- #
 
@@ -38,11 +40,9 @@ Question:
 
     free_models = [
         "qwen/qwen3-next-80b-a3b-instruct:free",
-        "mistralai/mistral-7b-instruct:free",
-        "openchat/openchat-7b:free"
+        "mistralai/mistral-7b-instruct:free"
     ]
 
-    # --- FREE ---
     for model in free_models:
         try:
             r = requests.post(
@@ -66,7 +66,7 @@ Question:
         except Exception as e:
             print("FREE FAIL:", model, e)
 
-    # --- POLZA ---
+    # fallback Polza
     try:
         r = requests.post(
             "https://api.polza.ai/v1/chat/completions",
@@ -86,8 +86,6 @@ Question:
         if "choices" in data:
             return "💰 Polza\n\n" + data["choices"][0]["message"]["content"]
 
-        return f"❌ Polza error: {data}"
-
     except Exception as e:
         return f"❌ LLM error: {e}"
 
@@ -96,13 +94,13 @@ Question:
 
 @dp.message(Command("start"))
 async def start(message: Message):
-    await message.answer("🤖 RAG Scientist ready\n\n/search <query>\n/ask <question>\n/stats")
+    await message.answer("🤖 RAG Scientist ready")
 
 
 @dp.message(Command("stats"))
 async def stats(message: Message):
-    articles = get_all_articles()
-    await message.answer(f"📊 В базе: {len(articles)} статей")
+    db = load_db()
+    await message.answer(f"📊 В базе: {len(db)} статей")
 
 
 @dp.message(Command("search"))
@@ -110,24 +108,26 @@ async def search(message: Message):
     query = message.text.replace("/search", "").strip()
 
     if not query:
-        await message.answer("❌ Укажи запрос: /search <query>")
+        await message.answer("❌ Укажи запрос")
         return
 
     await message.answer("🔍 Ищу статьи...")
 
-    articles = search_articles(query)
+    papers = search_all(query)
+    papers = deduplicate(papers)
+    papers = prepare_papers(papers)
 
-    if not articles:
+    if not papers:
         await message.answer("❌ Ничего не найдено")
         return
 
-    added = add_articles_to_db(articles)
+    added = add_papers(papers)
 
-    await message.answer(f"✅ Найдено: {len(articles)}\n💾 Добавлено: {added}")
+    await message.answer(f"✅ Найдено: {len(papers)}\n💾 Добавлено: {added}")
 
-    for art in articles[:3]:
+    for p in papers[:3]:
         await message.answer(
-            f"📄 {art['title']}\n\n🔗 {art['link']}\n\n📌 {art['summary'][:300]}..."
+            f"📄 {p['title']}\n\n🔗 {p['link']}\n\n📌 {p['text'][:300]}..."
         )
 
 
@@ -136,37 +136,36 @@ async def ask(message: Message):
     query = message.text.replace("/ask", "").strip()
 
     if not query:
-        await message.answer("❌ Укажи вопрос: /ask <question>")
+        await message.answer("❌ Укажи вопрос")
         return
 
     await message.answer("🧠 Думаю...")
 
-    # --- 1. поиск в БД ---
-    docs = search_articles(query)
-    print("Docs found:", len(docs))
+    # --- поиск в БД ---
+    docs = search_db(query)
 
-    # --- 2. авто-поиск ---
     if not docs:
         await message.answer("⚠️ Нет данных → ищу...")
 
-        new_articles = search_articles(query)
-        added = add_articles_to_db(new_articles)
+        papers = search_all(query)
+        papers = deduplicate(papers)
+        papers = prepare_papers(papers)
 
-        if not new_articles:
+        added = add_papers(papers)
+
+        if not papers:
             await message.answer("❌ Ничего не найдено")
             return
 
-        docs = new_articles
+        docs = papers
         await message.answer(f"📚 Добавлено: {added}")
 
-    # --- 3. контекст ---
     context = build_context(docs)
 
     if len(context) < 200:
         await message.answer("❌ Недостаточно данных")
         return
 
-    # --- 4. LLM ---
     answer = llm_answer(context, query)
 
     await message.answer(answer)
