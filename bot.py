@@ -38,8 +38,6 @@ You are a scientific assistant.
 Answer the question ONLY using the provided context.
 If the answer is not in the context, say: "Not enough data".
 
-Be clear, structured, and concise.
-
 Context:
 {context}
 
@@ -47,32 +45,40 @@ Question:
 {question}
 """
 
-    try:
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "qwen/qwen3-next-80b-a3b-instruct:free",
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.3
-            },
-            timeout=60
-        )
+    models = [
+        "qwen/qwen3-next-80b-a3b-instruct:free",
+        "mistralai/mistral-7b-instruct:free",
+        "openchat/openchat-7b:free"
+    ]
 
-        data = response.json()
+    for model in models:
+        try:
+            response = requests.post(
+                url="https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.3
+                },
+                timeout=60
+            )
 
-        if "choices" not in data:
-            return f"❌ Ошибка LLM: {data}"
+            data = response.json()
 
-        return data["choices"][0]["message"]["content"]
+            # если норм ответ
+            if "choices" in data:
+                return f"🤖 Модель: {model}\n\n" + data["choices"][0]["message"]["content"]
 
-    except Exception as e:
-        return f"❌ Ошибка LLM: {e}"
+        except Exception as e:
+            print(f"Model {model} failed:", e)
+
+    return "❌ Все модели перегружены. Попробуй позже."
 
 
 # ==============================
