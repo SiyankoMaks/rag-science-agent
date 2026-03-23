@@ -2,8 +2,8 @@ import os
 import asyncio
 import requests
 
-from aiogram import Bot, Dispatcher
-from aiogram.types import Message
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
 
 from tools import search_all, prepare_papers, deduplicate
@@ -21,8 +21,50 @@ POLZA_API_KEY = os.getenv("POLZA_API_KEY")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# кеш переводов (чтобы не платить дважды)
+translation_cache = {}
 
-# ---------------- LLM ---------------- #
+
+# ---------------- UTILS ---------------- #
+
+def detect_language(text):
+    if any("а" <= c.lower() <= "я" for c in text):
+        return "ru"
+    return "en"
+
+
+def translate(text, target_lang="Russian"):
+    if text in translation_cache:
+        return translation_cache[text]
+
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "mistralai/mistral-7b-instruct:free",
+                "messages": [
+                    {"role": "user", "content": f"Translate to {target_lang}: {text}"}
+                ],
+                "temperature": 0
+            },
+            timeout=30
+        )
+        data = r.json()
+
+        if "choices" in data:
+            result = data["choices"][0]["message"]["content"]
+            translation_cache[text] = result
+            return result
+
+    except Exception as e:
+        print("TRANSLATE ERROR:", e)
+
+    return text
+
 
 def llm_answer(context, question):
     prompt = f"""
@@ -113,8 +155,18 @@ async def search(message: Message):
 
     await message.answer("🔍 Ищу статьи...")
 
-    papers = search_all(query)
-    papers = deduplicate(papers)
+    lang = detect_language(query)
+    all_papers = []
+
+    # основной поиск
+    all_papers.extend(search_all(query))
+
+    # если русский → добавляем английский
+    if lang == "ru":
+        translated_query = translate(query, "English")
+        all_papers.extend(search_all(translated_query))
+
+    papers = deduplicate(all_papers)
     papers = prepare_papers(papers)
 
     if not papers:
@@ -125,11 +177,52 @@ async def search(message: Message):
 
     await message.answer(f"✅ Найдено: {len(papers)}\n💾 Добавлено: {added}")
 
-    for p in papers[:3]:
-        await message.answer(
-            f"📄 {p['title']}\n\n🔗 {p['link']}\n\n📌 {p['text'][:300]}..."
+    # показываем только оригинал + кнопку
+    for i, p in enumerate(papers[:3]):
+        text = p["text"][:300]
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="🌍 Перевести",
+                    callback_data=f"translate_{i}"
+                )]
+            ]
         )
 
+        await message.answer(
+            f"📄 {p['title']}\n\n🔗 {p['link']}\n\n📌 {text}...",
+            reply_markup=keyboard
+        )
+
+    # сохраняем последние статьи (для перевода)
+    dp["last_papers"] = papers
+
+
+# ---------------- CALLBACK ---------------- #
+
+@dp.callback_query(F.data.startswith("translate_"))
+async def translate_callback(callback: CallbackQuery):
+    index = int(callback.data.split("_")[1])
+    papers = dp.get("last_papers", [])
+
+    if index >= len(papers):
+        await callback.answer("Ошибка")
+        return
+
+    p = papers[index]
+
+    title_ru = translate(p["title"], "Russian")
+    text_ru = translate(p["text"][:500], "Russian")
+
+    await callback.message.answer(
+        f"🌍 ПЕРЕВОД:\n\n{title_ru}\n\n{text_ru}"
+    )
+
+    await callback.answer()
+
+
+# ---------------- ASK ---------------- #
 
 @dp.message(Command("ask"))
 async def ask(message: Message):
@@ -141,7 +234,6 @@ async def ask(message: Message):
 
     await message.answer("🧠 Думаю...")
 
-    # --- поиск в БД ---
     docs = search_db(query)
 
     if not docs:
@@ -175,6 +267,7 @@ async def ask(message: Message):
 
 async def main():
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
