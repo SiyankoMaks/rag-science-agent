@@ -35,19 +35,28 @@ def add_papers(papers, user_id):
     return added
 
 
+# 🔥 УЛУЧШЕННЫЙ ПОИСК
 def search_db(query, user_id):
     db = load_db()
-
     results = []
+
+    query = query.lower()
+    words = query.split()
 
     for p in db:
         if p.get("user_id") != user_id:
             continue
 
-        if query.lower() in p["title"].lower() or query.lower() in p["text"].lower():
-            results.append(p)
+        text = (p["title"] + " " + p["text"]).lower()
 
-    return results[:5]
+        score = sum(1 for w in words if w in text)
+
+        if score > 0:
+            results.append((score, p))
+
+    results.sort(key=lambda x: x[0], reverse=True)
+
+    return [p for _, p in results[:5]]
 
 
 def delete_paper_by_index(user_id, index):
@@ -58,11 +67,11 @@ def delete_paper_by_index(user_id, index):
     if index >= len(user_papers):
         return False
 
-    paper_to_delete = user_papers[index]
+    paper = user_papers[index]
 
     new_db = [
         p for p in db
-        if not (p["link"] == paper_to_delete["link"] and p.get("user_id") == user_id)
+        if not (p["link"] == paper["link"] and p.get("user_id") == user_id)
     ]
 
     save_db(new_db)
@@ -90,6 +99,11 @@ def count_user_articles(user_id):
     return len([p for p in db if p.get("user_id") == user_id])
 
 
+def get_user_papers(user_id):
+    db = load_db()
+    return [p for p in db if p.get("user_id") == user_id]
+
+
 def build_context(docs):
     context = ""
 
@@ -97,7 +111,3 @@ def build_context(docs):
         context += f"{p['title']}\n{p['text']}\n\n"
 
     return context[:4000]
-
-def get_user_papers(user_id):
-    db = load_db()
-    return [p for p in db if p.get("user_id") == user_id]

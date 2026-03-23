@@ -90,7 +90,6 @@ def translate(text, target_lang="Russian"):
             res = data["choices"][0]["message"]["content"]
             translation_cache[key] = res
             return res
-
     except:
         pass
 
@@ -99,8 +98,8 @@ def translate(text, target_lang="Russian"):
 
 def llm_answer(context, question):
     prompt = f"""
-Answer using ONLY the context.
-If not enough data say: Not enough data.
+Answer using the context.
+If context is weak — still try to answer.
 
 Context:
 {context}
@@ -189,6 +188,9 @@ async def search(message: Message):
         all_papers += search_all(translate(query, "English"))
 
     papers = prepare_papers(deduplicate(all_papers))
+
+    # 🔥 фильтр мусора
+    papers = [p for p in papers if len(p["text"]) > 300]
 
     if not papers:
         await message.answer("❌ Ничего не найдено")
@@ -329,6 +331,7 @@ async def ask(message: Message):
             papers += search_all(translate(query, "English"))
 
         papers = prepare_papers(deduplicate(papers))
+        papers = [p for p in papers if len(p["text"]) > 300]
 
         if not papers:
             await message.answer("❌ Ничего не найдено")
@@ -340,10 +343,6 @@ async def ask(message: Message):
         await message.answer(f"📚 Найдено и добавлено: {len(papers)}")
 
     context = build_context(docs)
-
-    if len(context) < 200:
-        await message.answer("❌ Недостаточно данных")
-        return
 
     answer = llm_answer(context, query)
     await message.answer(answer)
