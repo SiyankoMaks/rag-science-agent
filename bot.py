@@ -96,8 +96,12 @@ def translate(text, target_lang="Russian"):
 
 def llm_answer(context, question):
     prompt = f"""
-Answer using the context.
-If context is weak — still try to answer.
+Answer the question using ONLY the provided context.
+
+Rules:
+- If the answer is not clearly in the context, say "Not enough data"
+- Do NOT use outside knowledge
+- Be precise and cite ideas from the context
 
 Context:
 {context}
