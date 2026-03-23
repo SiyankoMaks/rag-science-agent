@@ -1,101 +1,99 @@
 import json
 import os
 
-DB_FILE = "database.json"
-
-STOPWORDS = {
-    "what", "is", "how", "does", "the", "in", "on", "at",
-    "with", "a", "an", "of", "to", "and", "explain", "detail"
-}
+DB_FILE = "db.json"
 
 
-# ---------- Загрузка базы ----------
 def load_db():
     if not os.path.exists(DB_FILE):
         return []
-    
-    try:
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return []
+
+    with open(DB_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-# ---------- Сохранение базы ----------
-def save_db(data):
+def save_db(db):
     with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(db, f, ensure_ascii=False, indent=2)
 
 
-# ---------- Добавление статей ----------
-def add_papers(papers):
+def add_papers(papers, user_id):
     db = load_db()
-    
-    existing_links = set(p.get("link") for p in db)
-    
-    new_items = []
-    
+    added = 0
+
+    existing_links = {p["link"] for p in db}
+
     for p in papers:
-        if p.get("link") not in existing_links:
-            new_items.append(p)
-    
-    db.extend(new_items)
+        if p["link"] in existing_links:
+            continue
+
+        p["user_id"] = user_id
+        db.append(p)
+        added += 1
+
     save_db(db)
-    
-    return len(new_items)
+    return added
 
 
-# ---------- Поиск ----------
-def search_db(query, top_k=5):
+def search_db(query, user_id):
     db = load_db()
-    
+
     results = []
-    
-    query_words = [
-        w for w in query.lower().split()
-        if len(w) > 3 and w not in STOPWORDS
-    ]
-    
+
     for p in db:
-        text = (p.get("title", "") + " " + p.get("text", "")).lower()
-        
-        score = sum(1 for word in query_words if word in text)
-        
-        if score > 0:
-            results.append((score, p))
-    
-    results.sort(key=lambda x: x[0], reverse=True)
-    
-    # fallback
-    if not results:
-        return db[:top_k]
-    
-    return [p for _, p in results[:top_k]]
+        if p.get("user_id") != user_id:
+            continue
+
+        if query.lower() in p["title"].lower() or query.lower() in p["text"].lower():
+            results.append(p)
+
+    return results[:5]
 
 
-# ---------- Контекст ----------
-def build_context(papers, max_chars=3000):
-    context = ""
-    
-    for p in papers:
-        chunk = f"""
-TITLE: {p.get("title", "")}
-TEXT: {p.get("text", "")}
-SOURCE: {p.get("link", "")}
------------------------
-"""
-        if len(context) + len(chunk) > max_chars:
-            break
-        
-        context += chunk
-    
-    return context.strip()
-
-
-# ---------- Статистика ----------
-def db_stats():
+def delete_paper_by_index(user_id, index):
     db = load_db()
-    
-    return {
-        "total_papers": len(db)
-    }
+
+    user_papers = [p for p in db if p.get("user_id") == user_id]
+
+    if index >= len(user_papers):
+        return False
+
+    paper_to_delete = user_papers[index]
+
+    new_db = [
+        p for p in db
+        if not (p["link"] == paper_to_delete["link"] and p.get("user_id") == user_id)
+    ]
+
+    save_db(new_db)
+    return True
+
+
+def delete_by_query(user_id, query):
+    db = load_db()
+
+    new_db = []
+    removed = 0
+
+    for p in db:
+        if p.get("user_id") == user_id and query.lower() in p["title"].lower():
+            removed += 1
+        else:
+            new_db.append(p)
+
+    save_db(new_db)
+    return removed
+
+
+def count_user_articles(user_id):
+    db = load_db()
+    return len([p for p in db if p.get("user_id") == user_id])
+
+
+def build_context(docs):
+    context = ""
+
+    for p in docs:
+        context += f"{p['title']}\n{p['text']}\n\n"
+
+    return context[:4000]

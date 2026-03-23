@@ -10,8 +10,10 @@ from tools import search_all, prepare_papers, deduplicate
 from rag import (
     search_db,
     add_papers,
-    load_db,
-    build_context
+    build_context,
+    delete_paper_by_index,
+    delete_by_query,
+    count_user_articles
 )
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -21,8 +23,8 @@ POLZA_API_KEY = os.getenv("POLZA_API_KEY")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# кеш переводов (чтобы не платить дважды)
 translation_cache = {}
+user_papers = {}
 
 
 # ---------------- UTILS ---------------- #
@@ -34,8 +36,10 @@ def detect_language(text):
 
 
 def translate(text, target_lang="Russian"):
-    if text in translation_cache:
-        return translation_cache[text]
+    cache_key = f"{text}_{target_lang}"
+
+    if cache_key in translation_cache:
+        return translation_cache[cache_key]
 
     prompt = f"""
 Translate the following text to {target_lang}.
@@ -43,41 +47,72 @@ Translate the following text to {target_lang}.
 IMPORTANT:
 - Return ONLY translated text
 - Do NOT repeat original
-- Do NOT explain anything
 
 TEXT:
 {text}
 """
 
+    # -------- FREE -------- #
+    free_models = [
+        "mistralai/mistral-7b-instruct:free",
+        "qwen/qwen3-next-80b-a3b-instruct:free"
+    ]
+
+    for model in free_models:
+        try:
+            r = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0
+                },
+                timeout=30
+            )
+
+            data = r.json()
+
+            if "choices" in data:
+                result = data["choices"][0]["message"]["content"].strip()
+
+                # защита от "не перевёл"
+                if result.lower() != text.lower():
+                    translation_cache[cache_key] = result
+                    return result
+
+        except Exception as e:
+            print("FREE TRANSLATE FAIL:", model, e)
+
+    # -------- POLZA -------- #
     try:
         r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
+            "https://api.polza.ai/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Authorization": f"Bearer {POLZA_API_KEY}",
                 "Content-Type": "application/json"
             },
             json={
-                "model": "mistralai/mistral-7b-instruct:free",
+                "model": "qwen/qwen3-next-80b-a3b-instruct",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0
             },
-            timeout=30
+            timeout=60
         )
+
         data = r.json()
 
         if "choices" in data:
             result = data["choices"][0]["message"]["content"].strip()
 
-            # 🔥 защита от "не перевёл"
-            if result.lower() == text.lower():
-                print("⚠️ Translation failed, fallback")
-                return text
-
-            translation_cache[text] = result
+            translation_cache[cache_key] = result
             return result
 
     except Exception as e:
-        print("TRANSLATE ERROR:", e)
+        print("POLZA TRANSLATE FAIL:", e)
 
     return text
 
@@ -88,6 +123,8 @@ You are a scientific assistant.
 
 Answer ONLY using the context.
 If not enough info, say: Not enough data.
+
+Answer in the same language as the question.
 
 Context:
 {context}
@@ -101,6 +138,7 @@ Question:
         "mistralai/mistral-7b-instruct:free"
     ]
 
+    # -------- FREE -------- #
     for model in free_models:
         try:
             r = requests.post(
@@ -116,15 +154,16 @@ Question:
                 },
                 timeout=40
             )
+
             data = r.json()
 
             if "choices" in data:
                 return f"🆓 {model}\n\n" + data["choices"][0]["message"]["content"]
 
         except Exception as e:
-            print("FREE FAIL:", model, e)
+            print("FREE LLM FAIL:", model, e)
 
-    # fallback Polza
+    # -------- POLZA -------- #
     try:
         r = requests.post(
             "https://api.polza.ai/v1/chat/completions",
@@ -139,13 +178,16 @@ Question:
             },
             timeout=60
         )
+
         data = r.json()
 
         if "choices" in data:
             return "💰 Polza\n\n" + data["choices"][0]["message"]["content"]
 
     except Exception as e:
-        return f"❌ LLM error: {e}"
+        print("POLZA LLM FAIL:", e)
+
+    return "❌ Ошибка LLM"
 
 
 # ---------------- COMMANDS ---------------- #
@@ -157,8 +199,8 @@ async def start(message: Message):
 
 @dp.message(Command("stats"))
 async def stats(message: Message):
-    db = load_db()
-    await message.answer(f"📊 В базе: {len(db)} статей")
+    count = count_user_articles(message.from_user.id)
+    await message.answer(f"📊 Твоих статей: {count}")
 
 
 @dp.message(Command("search"))
@@ -174,45 +216,61 @@ async def search(message: Message):
     lang = detect_language(query)
     all_papers = []
 
-    # основной поиск
     all_papers.extend(search_all(query))
 
-    # если русский → добавляем английский
     if lang == "ru":
-        translated_query = translate(query, "English")
-        all_papers.extend(search_all(translated_query))
+        translated = translate(query, "English")
+        all_papers.extend(search_all(translated))
 
-    papers = deduplicate(all_papers)
-    papers = prepare_papers(papers)
+    papers = prepare_papers(deduplicate(all_papers))
 
     if not papers:
         await message.answer("❌ Ничего не найдено")
         return
 
-    added = add_papers(papers)
+    added = add_papers(papers, message.from_user.id)
 
     await message.answer(f"✅ Найдено: {len(papers)}\n💾 Добавлено: {added}")
 
-    # показываем только оригинал + кнопку
-    for i, p in enumerate(papers[:3]):
-        text = p["text"][:300]
+    user_papers[message.from_user.id] = papers
 
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(
+    for i, p in enumerate(papers[:3]):
+        buttons = []
+
+        if detect_language(p["title"]) == "en":
+            buttons.append(
+                InlineKeyboardButton(
                     text="🌍 Перевести",
                     callback_data=f"translate_{i}"
-                )]
-            ]
+                )
+            )
+
+        buttons.append(
+            InlineKeyboardButton(
+                text="🗑 Удалить",
+                callback_data=f"delete_{i}"
+            )
         )
 
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[buttons])
+
         await message.answer(
-            f"📄 {p['title']}\n\n🔗 {p['link']}\n\n📌 {text}...",
+            f"📄 {p['title']}\n\n🔗 {p['link']}\n\n📌 {p['text'][:300]}...",
             reply_markup=keyboard
         )
 
-    # сохраняем последние статьи (для перевода)
-    dp["last_papers"] = papers
+
+@dp.message(Command("delete"))
+async def delete(message: Message):
+    query = message.text.replace("/delete", "").strip()
+
+    if not query:
+        await message.answer("❌ Укажи часть названия")
+        return
+
+    removed = delete_by_query(message.from_user.id, query)
+
+    await message.answer(f"🗑 Удалено: {removed}")
 
 
 # ---------------- CALLBACK ---------------- #
@@ -220,7 +278,7 @@ async def search(message: Message):
 @dp.callback_query(F.data.startswith("translate_"))
 async def translate_callback(callback: CallbackQuery):
     index = int(callback.data.split("_")[1])
-    papers = dp.get("last_papers", [])
+    papers = user_papers.get(callback.from_user.id, [])
 
     if index >= len(papers):
         await callback.answer("Ошибка")
@@ -238,6 +296,20 @@ async def translate_callback(callback: CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query(F.data.startswith("delete_"))
+async def delete_callback(callback: CallbackQuery):
+    index = int(callback.data.split("_")[1])
+
+    success = delete_paper_by_index(callback.from_user.id, index)
+
+    if success:
+        await callback.message.answer("🗑 Статья удалена")
+    else:
+        await callback.message.answer("❌ Ошибка удаления")
+
+    await callback.answer()
+
+
 # ---------------- ASK ---------------- #
 
 @dp.message(Command("ask"))
@@ -250,23 +322,26 @@ async def ask(message: Message):
 
     await message.answer("🧠 Думаю...")
 
-    docs = search_db(query)
+    docs = search_db(query, message.from_user.id)
 
     if not docs:
-        await message.answer("⚠️ Нет данных → ищу...")
+        await message.answer("⚠️ Нет данных\n🔍 Ищу статьи...")
 
         papers = search_all(query)
-        papers = deduplicate(papers)
-        papers = prepare_papers(papers)
 
-        added = add_papers(papers)
+        if detect_language(query) == "ru":
+            papers += search_all(translate(query, "English"))
+
+        papers = prepare_papers(deduplicate(papers))
 
         if not papers:
             await message.answer("❌ Ничего не найдено")
             return
 
+        add_papers(papers, message.from_user.id)
         docs = papers
-        await message.answer(f"📚 Добавлено: {added}")
+
+        await message.answer(f"📚 Найдено и добавлено: {len(papers)}")
 
     context = build_context(docs)
 
