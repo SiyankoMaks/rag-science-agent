@@ -16,6 +16,11 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
+# ---------- Нормализация ----------
+def normalize_query(q: str):
+    return q.lower().strip()
+
+
 # ==============================
 # ---------- LLM ---------------
 # ==============================
@@ -28,12 +33,12 @@ def llm_answer(context, question):
         return "❌ В базе нет информации. Сначала используй /search"
 
     prompt = f"""
-You are a scientific research assistant.
+You are a scientific assistant.
 
-Answer the question strictly based on the provided context.
-- Do NOT invent information
-- If data is insufficient, say: "Not enough data"
-- Be clear and structured
+Answer the question ONLY using the provided context.
+If the answer is not in the context, say: "Not enough data".
+
+Be clear, structured, and concise.
 
 Context:
 {context}
@@ -50,7 +55,7 @@ Question:
                 "Content-Type": "application/json"
             },
             json={
-                "model": "qwen/qwen3-next-80b-a3b-instruct",
+                "model": "qwen/qwen3-next-80b-a3b-instruct:free",
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],
@@ -77,21 +82,17 @@ Question:
 @dp.message(Command("start"))
 async def start(msg: types.Message):
     await msg.answer(
-        "🧠 RAG-агент ученого (с LLM)\n\n"
-        "Команды:\n"
-        "/search тема — найти и сохранить статьи\n"
-        "/ask вопрос — задать вопрос\n"
-        "/stats — статистика базы\n\n"
-        "Пример:\n"
-        "/search membrane transport\n"
-        "/ask how does ion transport work?"
+        "🧠 RAG-агент ученого (LLM)\n\n"
+        "/search тема\n"
+        "/ask вопрос\n"
+        "/stats"
     )
 
 
 # ---------- SEARCH ----------
 @dp.message(Command("search"))
 async def search(msg: types.Message):
-    query = msg.text.replace("/search", "").strip()
+    query = normalize_query(msg.text.replace("/search", ""))
     
     if not query:
         await msg.answer("❌ Пример:\n/search membrane transport")
@@ -113,20 +114,15 @@ async def search(msg: types.Message):
     await msg.answer(f"✅ Найдено: {len(papers)}\n💾 Добавлено: {added_count}")
     
     for p in papers[:3]:
-        text = f"""
-📄 {p['title']}
-
-🔗 {p['link']}
-
-📌 {p['text'][:300]}...
-"""
-        await msg.answer(text)
+        await msg.answer(
+            f"📄 {p['title']}\n\n🔗 {p['link']}\n\n📌 {p['text'][:300]}..."
+        )
 
 
 # ---------- ASK ----------
 @dp.message(Command("ask"))
 async def ask(msg: types.Message):
-    query = msg.text.replace("/ask", "").strip()
+    query = normalize_query(msg.text.replace("/ask", ""))
     
     if not query:
         await msg.answer("❌ Пример:\n/ask What is ion transport?")
@@ -137,14 +133,13 @@ async def ask(msg: types.Message):
     results = search_db(query)
     
     if not results:
-        await msg.answer("❌ Нет данных в базе. Сначала /search")
+        await msg.answer("❌ Нет данных в базе")
         return
     
     context = build_context(results)
     
     answer = llm_answer(context, query)
     
-    # защита от слишком длинных сообщений Telegram
     if len(answer) > 4000:
         answer = answer[:4000] + "\n\n⚠️ Ответ обрезан"
     
@@ -155,14 +150,10 @@ async def ask(msg: types.Message):
 @dp.message(Command("stats"))
 async def stats(msg: types.Message):
     stats = db_stats()
-    
-    await msg.answer(
-        f"📊 В базе статей: {stats['total_papers']}"
-    )
+    await msg.answer(f"📊 В базе: {stats['total_papers']} статей")
 
 
 # ---------- RUN ----------
-
 async def main():
     await dp.start_polling(bot)
 

@@ -3,6 +3,11 @@ import os
 
 DB_FILE = "database.json"
 
+STOPWORDS = {
+    "what", "is", "how", "does", "the", "in", "on", "at",
+    "with", "a", "an", "of", "to", "and", "explain", "detail"
+}
+
 
 # ---------- Загрузка базы ----------
 def load_db():
@@ -26,7 +31,6 @@ def save_db(data):
 def add_papers(papers):
     db = load_db()
     
-    # защита от дублей
     existing_links = set(p.get("link") for p in db)
     
     new_items = []
@@ -38,16 +42,19 @@ def add_papers(papers):
     db.extend(new_items)
     save_db(db)
     
-    return len(new_items)  # сколько добавили
+    return len(new_items)
 
 
-# ---------- Поиск по базе (простой RAG) ----------
+# ---------- Поиск ----------
 def search_db(query, top_k=5):
     db = load_db()
     
     results = []
     
-    query_words = query.lower().split()
+    query_words = [
+        w for w in query.lower().split()
+        if len(w) > 3 and w not in STOPWORDS
+    ]
     
     for p in db:
         text = (p.get("title", "") + " " + p.get("text", "")).lower()
@@ -57,13 +64,16 @@ def search_db(query, top_k=5):
         if score > 0:
             results.append((score, p))
     
-    # сортировка по релевантности
     results.sort(key=lambda x: x[0], reverse=True)
+    
+    # fallback
+    if not results:
+        return db[:top_k]
     
     return [p for _, p in results[:top_k]]
 
 
-# ---------- Формирование контекста ----------
+# ---------- Контекст ----------
 def build_context(papers, max_chars=3000):
     context = ""
     
@@ -80,11 +90,6 @@ SOURCE: {p.get("link", "")}
         context += chunk
     
     return context.strip()
-
-
-# ---------- Очистка базы (опционально) ----------
-def clear_db():
-    save_db([])
 
 
 # ---------- Статистика ----------
