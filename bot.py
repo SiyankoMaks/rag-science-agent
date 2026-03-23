@@ -1,7 +1,10 @@
 import os
+import asyncio
 import requests
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
+from aiogram.filters import Command
 
 from rag import (
     search_articles,
@@ -15,7 +18,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 POLZA_API_KEY = os.getenv("POLZA_API_KEY")
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher()
 
 # ---------------- LLM ---------------- #
 
@@ -91,81 +94,88 @@ Question:
 
 # ---------------- COMMANDS ---------------- #
 
-@dp.message_handler(commands=['start'])
-async def start(msg: types.Message):
-    await msg.reply("🤖 RAG Scientist ready\n\n/search <query>\n/ask <question>\n/stats")
+@dp.message(Command("start"))
+async def start(message: Message):
+    await message.answer("🤖 RAG Scientist ready\n\n/search <query>\n/ask <question>\n/stats")
 
 
-@dp.message_handler(commands=['stats'])
-async def stats(msg: types.Message):
+@dp.message(Command("stats"))
+async def stats(message: Message):
     articles = get_all_articles()
-    await msg.reply(f"📊 В базе: {len(articles)} статей")
+    await message.answer(f"📊 В базе: {len(articles)} статей")
 
 
-@dp.message_handler(commands=['search'])
-async def search(msg: types.Message):
-    query = msg.get_args()
+@dp.message(Command("search"))
+async def search(message: Message):
+    query = message.text.replace("/search", "").strip()
 
     if not query:
-        await msg.reply("❌ Укажи запрос: /search <query>")
+        await message.answer("❌ Укажи запрос: /search <query>")
         return
 
-    await msg.reply("🔍 Ищу статьи...")
+    await message.answer("🔍 Ищу статьи...")
 
     articles = search_articles(query)
 
     if not articles:
-        await msg.reply("❌ Ничего не найдено")
+        await message.answer("❌ Ничего не найдено")
         return
 
     added = add_articles_to_db(articles)
 
-    await msg.reply(f"✅ Найдено: {len(articles)}\n💾 Добавлено: {added}")
+    await message.answer(f"✅ Найдено: {len(articles)}\n💾 Добавлено: {added}")
 
     for art in articles[:3]:
-        await msg.reply(f"📄 {art['title']}\n\n🔗 {art['link']}\n\n📌 {art['summary'][:300]}...")
+        await message.answer(
+            f"📄 {art['title']}\n\n🔗 {art['link']}\n\n📌 {art['summary'][:300]}..."
+        )
 
 
-@dp.message_handler(commands=['ask'])
-async def ask(msg: types.Message):
-    query = msg.get_args()
+@dp.message(Command("ask"))
+async def ask(message: Message):
+    query = message.text.replace("/ask", "").strip()
 
     if not query:
-        await msg.reply("❌ Укажи вопрос: /ask <question>")
+        await message.answer("❌ Укажи вопрос: /ask <question>")
         return
 
-    await msg.reply("🧠 Думаю...")
+    await message.answer("🧠 Думаю...")
 
-    # --- 1. Ищем в БД ---
+    # --- 1. поиск в БД ---
     docs = search_articles(query)
     print("Docs found:", len(docs))
 
-    # --- 2. Если нет → авто-поиск ---
+    # --- 2. авто-поиск ---
     if not docs:
-        await msg.reply("⚠️ Нет данных → пробую найти...")
+        await message.answer("⚠️ Нет данных → ищу...")
 
         new_articles = search_articles(query)
         added = add_articles_to_db(new_articles)
 
         if not new_articles:
-            await msg.reply("❌ Ничего не найдено даже после поиска")
+            await message.answer("❌ Ничего не найдено")
             return
 
         docs = new_articles
-        await msg.reply(f"📚 Найдено и добавлено: {added}")
+        await message.answer(f"📚 Добавлено: {added}")
 
-    # --- 3. Строим контекст ---
+    # --- 3. контекст ---
     context = build_context(docs)
 
     if len(context) < 200:
-        await msg.reply("❌ Недостаточно данных в статьях")
+        await message.answer("❌ Недостаточно данных")
         return
 
     # --- 4. LLM ---
     answer = llm_answer(context, query)
 
-    await msg.reply(answer)
+    await message.answer(answer)
 
+
+# ---------------- RUN ---------------- #
+
+async def main():
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    asyncio.run(main())
