@@ -37,6 +37,18 @@ def translate(text, target_lang="Russian"):
     if text in translation_cache:
         return translation_cache[text]
 
+    prompt = f"""
+Translate the following text to {target_lang}.
+
+IMPORTANT:
+- Return ONLY translated text
+- Do NOT repeat original
+- Do NOT explain anything
+
+TEXT:
+{text}
+"""
+
     try:
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -46,9 +58,7 @@ def translate(text, target_lang="Russian"):
             },
             json={
                 "model": "mistralai/mistral-7b-instruct:free",
-                "messages": [
-                    {"role": "user", "content": f"Translate to {target_lang}: {text}"}
-                ],
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0
             },
             timeout=30
@@ -56,7 +66,13 @@ def translate(text, target_lang="Russian"):
         data = r.json()
 
         if "choices" in data:
-            result = data["choices"][0]["message"]["content"]
+            result = data["choices"][0]["message"]["content"].strip()
+
+            # 🔥 защита от "не перевёл"
+            if result.lower() == text.lower():
+                print("⚠️ Translation failed, fallback")
+                return text
+
             translation_cache[text] = result
             return result
 
