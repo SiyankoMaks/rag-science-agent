@@ -72,7 +72,10 @@ def add_papers(papers, user_id):
     db = load_db()
     added = 0
 
-    existing_links = {p["link"] for p in db}
+    existing_links = {
+        p["link"] for p in db
+        if p.get("user_id") == user_id
+    }
 
     for p in papers:
         if p["link"] in existing_links:

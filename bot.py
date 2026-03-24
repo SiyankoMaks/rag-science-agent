@@ -346,15 +346,18 @@ async def ask(message: Message):
 
     await message.answer("🧠 Думаю...")
 
-    docs = search_db(query, message.from_user.id)
+    lang = detect_language(query)
 
-    if not docs or len(docs) < 2:
+    search_query = query
+    if lang == "ru":
+        search_query = translate(query, "English")
+
+    docs = search_db(search_query, message.from_user.id)
+
+    if not docs:
         await message.answer("⚠️ Нет данных\n🔍 Ищу статьи...")
 
-        papers = search_all(query)
-
-        if detect_language(query) == "ru":
-            papers += search_all(translate(query, "English"))
+        papers = search_all(search_query)
 
         papers = prepare_papers(deduplicate(papers))
         papers = [p for p in papers if len(p["text"]) > 300]
@@ -363,9 +366,9 @@ async def ask(message: Message):
             await message.answer("❌ Ничего не найдено")
             return
 
-        if len(papers) >= 2:
-            add_papers(papers, message.from_user.id)
-        docs = search_db(query, message.from_user.id)
+        add_papers(papers, message.from_user.id)
+
+        docs = papers
 
         titles = "\n".join(f"• {p['title'][:80]}" for p in papers[:5])
 
@@ -376,7 +379,11 @@ async def ask(message: Message):
 
     context = build_context(docs)
 
-    answer = llm_answer(context, query)
+    answer = llm_answer(context, search_query)
+
+    if lang == "ru":
+        answer = translate(answer, "Russian")
+
     await message.answer(answer)
 
 
