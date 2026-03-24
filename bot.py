@@ -96,13 +96,11 @@ def translate(text, target_lang="Russian"):
 
 def llm_answer(context, question):
     prompt = f"""
-Answer the question using ONLY the provided context.
+Answer the question using the context if relevant.
 
-Rules:
-- If the answer is not clearly in the context, say "Not enough data"
-- DO NOT GUESS
-- DO NOT USE PRIOR KNOWLEDGE
-- Use only facts from context
+- If context is useful → use it
+- If context is weak → answer generally
+- Keep answer short and clear
 
 Context:
 {context}
@@ -340,13 +338,21 @@ async def view_cmd(message: Message):
 
 # ---------------- ASK ---------------- #
 
-def is_relevant(query, text):
+def simple_rerank(query, papers):
     query_words = set(query.lower().split())
-    text_words = set(text.lower().split())
 
-    overlap = query_words & text_words
+    scored = []
 
-    return len(overlap) >= 1
+    for p in papers:
+        text = (p.get("title","") + " " + p.get("text","")).lower()
+
+        score = sum(1 for w in query_words if w in text)
+
+        scored.append((score, p))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    return [p for score, p in scored if score > 0]
 
 @dp.message(Command("ask"))
 async def ask(message: Message):
@@ -371,25 +377,26 @@ async def ask(message: Message):
 
         papers = search_all(search_query)
 
-        papers = [
-            p for p in papers
-            if len(p.get("summary", "")) > 300
-        ]
+        papers = prepare_papers(deduplicate(papers), search_query)
 
-        papers = prepare_papers(deduplicate(papers))
+        papers = simple_rerank(search_query, papers)
+
         papers = [
             p for p in papers
-            if is_relevant(search_query, p.get("title", ""))
+            if len(p.get("text", "")) > 150
         ]
 
         if not papers:
-            await message.answer("❌ Ничего не найдено")
+            answer = llm_answer("", search_query)
+            if lang == "ru":
+                answer = translate(answer, "Russian")
+
+            await message.answer(answer)
             return
 
-        if len(papers) >= 3:
-            add_papers(papers[:10], message.from_user.id)
+        add_papers(papers[:10], message.from_user.id)
 
-        docs = papers
+        docs = papers[:5]
 
         titles = "\n".join(f"• {p['title'][:80]}" for p in papers[:5])
 

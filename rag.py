@@ -99,7 +99,7 @@ def add_papers(papers, user_id):
 
 # ---------------- SEARCH ---------------- #
 
-def search_db(query, user_id, top_k=5, threshold=0.6):
+def search_db(query, user_id, top_k=5, threshold=0.5):
     db = load_db()
 
     query_embedding = get_embedding(query)
@@ -198,7 +198,7 @@ def get_user_papers(user_id):
 def build_context(docs):
     context = ""
 
-    for p in docs:
-        context += f"{p['title']}\n{p['text']}\n\n"
+    for i, p in enumerate(docs[:5], 1):
+        context += f"[{i}] {p['title']}\n{p['text'][:500]}\n\n"
 
-    return context[:4000]
+    return context
