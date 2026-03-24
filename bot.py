@@ -365,9 +365,14 @@ async def ask(message: Message):
 
         if len(papers) >= 2:
             add_papers(papers, message.from_user.id)
-        docs = papers
+        docs = search_db(query, message.from_user.id)
 
-        await message.answer(f"📚 Найдено и добавлено: {len(papers)}")
+        titles = "\n".join(f"• {p['title'][:80]}" for p in papers[:5])
+
+        await message.answer(
+            f"📚 Найдено и добавлено: {len(papers)}\n\n"
+            f"📄 Примеры:\n{titles}"
+        )
 
     context = build_context(docs)
 
@@ -377,7 +382,7 @@ async def ask(message: Message):
 
 # ---------------- CALLBACKS ---------------- #
 
-@dp.callback_query(F.data.startswith("translate_"))
+@dp.callback_query(F.data.regexp(r"^translate_\d+$"))
 async def translate_callback(callback: CallbackQuery):
     idx = int(callback.data.split("_")[1])
     papers = last_search_cache.get(callback.from_user.id, [])
@@ -396,7 +401,12 @@ async def translate_callback(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("translate_view_"))
 async def translate_view_callback(callback: CallbackQuery):
-    idx = int(callback.data.split("_")[2])
+    try:
+        idx = int(callback.data.split("_")[2])
+    except:
+        await callback.answer("Ошибка")
+        return
+
     papers = get_user_papers(callback.from_user.id)
 
     if idx >= len(papers):

@@ -96,15 +96,15 @@ def add_papers(papers, user_id):
 
 # ---------------- SEARCH ---------------- #
 
-def search_db(query, user_id, top_k=5):
+def search_db(query, user_id, top_k=5, threshold=0.35):
     db = load_db()
 
     query_embedding = get_embedding(query)
-
     if not query_embedding:
         return []
 
     scored = []
+    updated = False  # для fallback
 
     for p in db:
         if p.get("user_id") != user_id:
@@ -113,15 +113,31 @@ def search_db(query, user_id, top_k=5):
         emb = p.get("embedding")
 
         if not emb:
-            continue
+            emb = get_embedding(p.get("text", ""))
+
+            if not emb:
+                continue
+
+            p["embedding"] = emb
+            updated = True
 
         score = cosine_similarity(query_embedding, emb)
         scored.append((score, p))
 
+    if updated:
+        save_db(db)
+
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    # фильтр слабых совпадений
-    return [p for score, p in scored[:top_k] if score > 0.35]
+    results = []
+    for score, p in scored:
+        if score < threshold:
+            continue
+        results.append(p)
+        if len(results) >= top_k:
+            break
+
+    return results
 
 
 # ---------------- DELETE ---------------- #
