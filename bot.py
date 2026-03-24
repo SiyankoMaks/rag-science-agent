@@ -187,7 +187,7 @@ async def search(message: Message):
     if detect_language(query) == "ru":
         all_papers += search_all(translate(query, "English"))
 
-    papers = prepare_papers(deduplicate(all_papers))
+    papers = prepare_papers(deduplicate(all_papers), query)
     papers = [p for p in papers if len(p["text"]) > 300]
 
     if not papers:
@@ -197,7 +197,13 @@ async def search(message: Message):
     added = add_papers(papers, message.from_user.id)
     last_search_cache[message.from_user.id] = papers
 
-    await message.answer(f"✅ Найдено: {len(papers)}\n💾 Добавлено: {added}")
+    titles = "\n".join(f"• {p['title'][:80]}" for p in papers[:5])
+
+    await message.answer(
+        f"✅ Найдено: {len(papers)}\n"
+        f"💾 Добавлено: {added}\n\n"
+        f"📚 Примеры:\n{titles}"
+    )
 
     for i, p in enumerate(papers[:3]):
         buttons = []
@@ -238,16 +244,38 @@ async def delete(message: Message):
 
 # ---------------- LIST ---------------- #
 
-def build_keyboard(page, total):
+
+def build_list_page(papers, page, per_page=5):
+    total_pages = max(1, (len(papers) + per_page - 1) // per_page)
+
+    page = max(0, min(page, total_pages - 1))
+
+    start = page * per_page
+    end = start + per_page
+
+    items = papers[start:end]
+
+    text = f"📚 Твои статьи (стр. {page+1}/{total_pages}):\n\n"
+
+    for i, p in enumerate(items, start=start + 1):
+        text += f"{i}. {p['title'][:80]}\n"
+
+    # кнопки
     buttons = []
 
     if page > 0:
-        buttons.append(InlineKeyboardButton(text="⬅️", callback_data=f"page_{page-1}"))
+        buttons.append(
+            InlineKeyboardButton(text="⬅️", callback_data=f"list_{page-1}")
+        )
 
-    if (page + 1) * PAGE_SIZE < total:
-        buttons.append(InlineKeyboardButton(text="➡️", callback_data=f"page_{page+1}"))
+    if page < total_pages - 1:
+        buttons.append(
+            InlineKeyboardButton(text="➡️", callback_data=f"list_{page+1}")
+        )
 
-    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[buttons] if buttons else [])
+
+    return text, keyboard
 
 
 @dp.message(Command("list"))
@@ -255,35 +283,12 @@ async def list_cmd(message: Message):
     papers = get_user_papers(message.from_user.id)
 
     if not papers:
-        await message.answer("📭 Нет статей")
+        await message.answer("📭 У тебя нет статей")
         return
 
-    user_papers_cache[message.from_user.id] = papers
-    await send_page(message, papers, 0)
+    text, keyboard = build_list_page(papers, page=0)
 
-
-async def send_page(message, papers, page):
-    start = page * PAGE_SIZE
-    chunk = papers[start:start + PAGE_SIZE]
-
-    text = "\n\n".join(
-        f"{i+start+1}. {p['title'][:80]}"
-        for i, p in enumerate(chunk)
-    )
-
-    await message.answer(
-        f"📚 Статьи:\n\n{text}",
-        reply_markup=build_keyboard(page, len(papers))
-    )
-
-
-@dp.callback_query(F.data.startswith("page_"))
-async def page_callback(callback: CallbackQuery):
-    page = int(callback.data.split("_")[1])
-    papers = user_papers_cache.get(callback.from_user.id, [])
-
-    await send_page(callback.message, papers, page)
-    await callback.answer()
+    await message.answer(text, reply_markup=keyboard)
 
 
 # ---------------- VIEW ---------------- #
@@ -304,8 +309,28 @@ async def view_cmd(message: Message):
 
     p = papers[idx]
 
+    buttons = []
+
+    if detect_language(p["title"]) == "en":
+        buttons.append(
+            InlineKeyboardButton(
+                text="🌍 Перевести",
+                callback_data=f"translate_view_{idx}"
+            )
+        )
+
+    buttons.append(
+        InlineKeyboardButton(
+            text="🗑 Удалить",
+            callback_data=f"delete_{p['link']}"
+        )
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[buttons])
+
     await message.answer(
-        f"📄 {p['title']}\n\n{p['text']}\n\n🔗 {p['link']}"
+        f"📄 {p['title']}\n\n{p['text']}\n\n🔗 {p['link']}",
+        reply_markup=keyboard
     )
 
 
@@ -323,7 +348,7 @@ async def ask(message: Message):
 
     docs = search_db(query, message.from_user.id)
 
-    if not docs:
+    if not docs or len(docs) < 2:
         await message.answer("⚠️ Нет данных\n🔍 Ищу статьи...")
 
         papers = search_all(query)
@@ -338,7 +363,8 @@ async def ask(message: Message):
             await message.answer("❌ Ничего не найдено")
             return
 
-        add_papers(papers, message.from_user.id)
+        if len(papers) >= 2:
+            add_papers(papers, message.from_user.id)
         docs = papers
 
         await message.answer(f"📚 Найдено и добавлено: {len(papers)}")
@@ -368,6 +394,24 @@ async def translate_callback(callback: CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query(F.data.startswith("translate_view_"))
+async def translate_view_callback(callback: CallbackQuery):
+    idx = int(callback.data.split("_")[2])
+    papers = get_user_papers(callback.from_user.id)
+
+    if idx >= len(papers):
+        await callback.answer("Ошибка")
+        return
+
+    p = papers[idx]
+
+    await callback.message.answer(
+        f"🌍 ПЕРЕВОД:\n\n{translate(p['title'])}\n\n{translate(p['text'][:500])}"
+    )
+
+    await callback.answer()
+
+
 @dp.callback_query(F.data.startswith("delete_"))
 async def delete_callback(callback: CallbackQuery):
     link = callback.data.replace("delete_", "", 1)
@@ -379,6 +423,18 @@ async def delete_callback(callback: CallbackQuery):
     else:
         await callback.message.answer("❌ Ошибка")
 
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("list_"))
+async def list_pagination(callback: CallbackQuery):
+    page = int(callback.data.split("_")[1])
+
+    papers = get_user_papers(callback.from_user.id)
+
+    text, keyboard = build_list_page(papers, page)
+
+    await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
 
 

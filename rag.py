@@ -121,7 +121,7 @@ def search_db(query, user_id, top_k=5):
     scored.sort(key=lambda x: x[0], reverse=True)
 
     # фильтр слабых совпадений
-    return [p for score, p in scored[:top_k] if score > 0.25]
+    return [p for score, p in scored[:top_k] if score > 0.35]
 
 
 # ---------------- DELETE ---------------- #

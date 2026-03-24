@@ -112,15 +112,27 @@ def truncate_text(text, max_len=1000):
 
 
 # ---------- Подготовка результатов ----------
-def prepare_papers(papers):
+
+def is_relevant(text, query):
+    query_words = query.lower().split()
+    text = text.lower()
+
+    return any(w in text for w in query_words)
+
+def prepare_papers(papers, query=None):
     prepared = []
-    
+
     for p in papers:
+        text = p.get("text", "")
+
+        if query and not is_relevant(text, query):
+            continue
+
         prepared.append({
             "title": p.get("title", ""),
-            "text": truncate_text(p.get("text", "")),
+            "text": truncate_text(text),
             "link": p.get("link", ""),
             "source": p.get("source", "")
         })
-    
+
     return prepared
