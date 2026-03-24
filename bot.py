@@ -100,8 +100,9 @@ Answer the question using ONLY the provided context.
 
 Rules:
 - If the answer is not clearly in the context, say "Not enough data"
-- Do NOT use outside knowledge
-- Be precise and cite ideas from the context
+- DO NOT GUESS
+- DO NOT USE PRIOR KNOWLEDGE
+- Use only facts from context
 
 Context:
 {context}
@@ -185,7 +186,10 @@ async def search(message: Message):
     all_papers = search_all(query)
 
     if detect_language(query) == "ru":
-        all_papers += search_all(translate(query, "English"))
+        en_query = translate(query, "English")
+        all_papers += search_all(en_query)
+
+    all_papers = deduplicate(all_papers)
 
     papers = prepare_papers(deduplicate(all_papers), query)
     papers = [p for p in papers if len(p["text"]) > 300]
@@ -336,6 +340,14 @@ async def view_cmd(message: Message):
 
 # ---------------- ASK ---------------- #
 
+def is_relevant(query, text):
+    query_words = set(query.lower().split())
+    text_words = set(text.lower().split())
+
+    overlap = query_words & text_words
+
+    return len(overlap) >= 1
+
 @dp.message(Command("ask"))
 async def ask(message: Message):
     query = message.text.replace("/ask", "").strip()
@@ -359,14 +371,23 @@ async def ask(message: Message):
 
         papers = search_all(search_query)
 
+        papers = [
+            p for p in papers
+            if len(p.get("summary", "")) > 300
+        ]
+
         papers = prepare_papers(deduplicate(papers))
-        papers = [p for p in papers if len(p["text"]) > 300]
+        papers = [
+            p for p in papers
+            if is_relevant(search_query, p.get("title", ""))
+        ]
 
         if not papers:
             await message.answer("❌ Ничего не найдено")
             return
 
-        add_papers(papers, message.from_user.id)
+        if len(papers) >= 3:
+            add_papers(papers[:10], message.from_user.id)
 
         docs = papers
 
