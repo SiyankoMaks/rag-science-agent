@@ -198,7 +198,7 @@ def get_user_papers(user_id):
 def build_context(docs):
     context = ""
 
-    for i, p in enumerate(docs[:5], 1):
+    for i, p in enumerate(docs[:10], 1):
         context += f"[{i}] {p['title']}\n{p['text'][:500]}\n\n"
 
     return context

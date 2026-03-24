@@ -141,7 +141,6 @@ Question:
     except:
         return "❌ Ошибка"
 
-
 # ---------------- COMMANDS ---------------- #
 
 @dp.message(Command("start"))
@@ -379,7 +378,12 @@ async def ask(message: Message):
 
     print("QUERY:", search_query)
 
-    docs = search_db(search_query, message.from_user.id)
+    docs = search_db(
+        search_query,
+        message.from_user.id,
+        top_k=10,
+        threshold=0.35
+    )
 
     print("DOCS FOUND:", len(docs))
 
@@ -411,13 +415,15 @@ async def ask(message: Message):
 
         docs = papers[:5]
 
-        titles = "\n".join(
-            f"{i+1}. {p['title'][:80]}"
-            for i, p in enumerate(papers)
-        )
+        titles = ""
+        for i, p in enumerate(papers, 1):
+            line = f"{i}. {p['title'][:80]}\n"
 
-        if len(titles) > 3500:
-            titles = titles[:3500] + "\n..."
+            if len(titles) + len(line) > 3800:
+                titles += "\n..."
+                break
+
+            titles += line
 
         await message.answer(
             f"📚 Найдено и добавлено: {len(papers)}\n\n"
@@ -500,7 +506,10 @@ async def list_pagination(callback: CallbackQuery):
 
     text, keyboard = build_list_page(papers, page)
 
-    await callback.message.edit_text(text, reply_markup=keyboard)
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard)
+    except:
+        pass
     await callback.answer()
 
 
