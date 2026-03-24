@@ -365,6 +365,10 @@ async def ask(message: Message):
         await message.answer("❌ Укажи вопрос")
         return
 
+    if len(query.split()) < 2:
+        await message.answer("❌ Слишком короткий запрос")
+        return
+
     await message.answer("🧠 Думаю...")
 
     lang = detect_language(query)
@@ -397,14 +401,10 @@ async def ask(message: Message):
         ]
 
         if not papers:
-            answer = llm_answer("", search_query)
-
-            if lang == "ru":
-                answer = translate(answer, "Russian")
-
-            answer = "⚠️ Ответ без источников\n\n" + answer
-
-            await message.answer(answer)
+            await message.answer(
+                "❌ Не удалось найти релевантные научные статьи\n"
+                "Попробуй уточнить запрос"
+            )
             return
 
         add_papers(papers[:10], message.from_user.id)
@@ -416,19 +416,19 @@ async def ask(message: Message):
             for i, p in enumerate(papers)
         )
 
+        if len(titles) > 3500:
+            titles = titles[:3500] + "\n..."
+
         await message.answer(
             f"📚 Найдено и добавлено: {len(papers)}\n\n"
             f"📄 Все статьи:\n{titles}"
         )
 
-    # ---------------- ГЕНЕРАЦИЯ ОТВЕТА ---------------- #
+    # ---------------- ГЕНЕРАЦИЯ ---------------- #
 
-    if docs:
-        context = build_context(docs)
-        answer = llm_answer(context, search_query)
-    else:
-        answer = llm_answer("", search_query)
-        answer = "⚠️ Ответ без источников\n\n" + answer
+    context = build_context(docs)
+
+    answer = llm_answer(context, search_query)
 
     if lang == "ru":
         answer = translate(answer, "Russian")
