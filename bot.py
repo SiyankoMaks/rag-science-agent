@@ -338,21 +338,24 @@ async def view_cmd(message: Message):
 
 # ---------------- ASK ---------------- #
 
+def is_relevant(query, paper):
+    q = set(query.lower().split())
+    text = (paper.get("title", "") + paper.get("text", "")).lower()
+    return sum(1 for w in q if w in text) >= 2
+
+
 def simple_rerank(query, papers):
     query_words = set(query.lower().split())
-
     scored = []
 
     for p in papers:
-        text = (p.get("title","") + " " + p.get("text","")).lower()
-
+        text = (p.get("title", "") + " " + p.get("text", "")).lower()
         score = sum(1 for w in query_words if w in text)
-
         scored.append((score, p))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-
     return [p for score, p in scored if score > 0]
+
 
 @dp.message(Command("ask"))
 async def ask(message: Message):
@@ -370,8 +373,13 @@ async def ask(message: Message):
     if lang == "ru":
         search_query = translate(query, "English")
 
+    print("QUERY:", search_query)
+
     docs = search_db(search_query, message.from_user.id)
 
+    print("DOCS FOUND:", len(docs))
+
+    # ---------------- ЕСЛИ НЕТ В БД ---------------- #
     if not docs:
         await message.answer("⚠️ Нет данных\n🔍 Ищу статьи...")
 
@@ -381,6 +389,8 @@ async def ask(message: Message):
 
         papers = simple_rerank(search_query, papers)
 
+        papers = [p for p in papers if is_relevant(search_query, p)]
+
         papers = [
             p for p in papers
             if len(p.get("text", "")) > 150
@@ -388,8 +398,11 @@ async def ask(message: Message):
 
         if not papers:
             answer = llm_answer("", search_query)
+
             if lang == "ru":
                 answer = translate(answer, "Russian")
+
+            answer = "⚠️ Ответ без источников\n\n" + answer
 
             await message.answer(answer)
             return
@@ -398,16 +411,24 @@ async def ask(message: Message):
 
         docs = papers[:5]
 
-        titles = "\n".join(f"• {p['title'][:80]}" for p in papers[:5])
+        titles = "\n".join(
+            f"{i+1}. {p['title'][:80]}"
+            for i, p in enumerate(papers)
+        )
 
         await message.answer(
             f"📚 Найдено и добавлено: {len(papers)}\n\n"
-            f"📄 Примеры:\n{titles}"
+            f"📄 Все статьи:\n{titles}"
         )
 
-    context = build_context(docs)
+    # ---------------- ГЕНЕРАЦИЯ ОТВЕТА ---------------- #
 
-    answer = llm_answer(context, search_query)
+    if docs:
+        context = build_context(docs)
+        answer = llm_answer(context, search_query)
+    else:
+        answer = llm_answer("", search_query)
+        answer = "⚠️ Ответ без источников\n\n" + answer
 
     if lang == "ru":
         answer = translate(answer, "Russian")
